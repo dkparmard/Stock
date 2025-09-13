@@ -1,78 +1,100 @@
-import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
-import datetime
+import yfinance as yf
+import ta
+from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="Indian Stock Screener", layout="wide")
+def fetch_nifty50_tickers():
+    """
+    Scrape Wikipedia for current NIFTY 50 tickers, return a list
+    of tickers with '.NS' appended for Yahoo Finance.
+    """
+    url = "https://en.wikipedia.org/wiki/NIFTY_50"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "lxml")
 
-st.title("📈 Indian Stock Screener (50/100 SMA + Trend Filter)")
+    table = soup.find("table", {"class": "wikitable sortable"})
+    tickers = []
+    if not table:
+        raise ValueError("Could not find constituents table on Wikipedia page")
 
-# ---- User Inputs ----
-symbols_input = st.text_input(
-    "Enter NSE stock symbols (comma separated, e.g. RELIANCE.NS, TCS.NS, INFY.NS)",
-    "RELIANCE.NS"
-)
+    # The “Symbol” column has tickers without suffix
+    for row in table.find_all("tr")[1:]:  # skip header row
+        cols = row.find_all("td")
+        if len(cols) < 2:  # skip malformed rows
+            continue
+        symbol = cols[1].text.strip()  # The symbol is in the 2nd column (0-based index 1)
+        if symbol:
+            # Append .NS for Yahoo Finance NSE data
+            yf_symbol = f"{symbol}.NS"
+            tickers.append(yf_symbol)
+    return tickers
 
-lookback = st.number_input("Lookback bars (0 = only today)", min_value=0, value=0, step=1)
-
-# ---- Function to fetch and screen ----
-def fetch_and_screen(symbol, recent=0):
-    try:
-        df = yf.download(symbol, period="6mo", interval="1d", progress=False)
-
-        if df.empty:
-            return None
-
-        # Moving Averages
-        df["SMA50"] = df["Close"].rolling(window=50).mean()
-        df["SMA100"] = df["Close"].rolling(window=100).mean()
-        df["SMA20"] = df["Close"].rolling(window=20).mean()
-        df["EMA8"] = df["Close"].ewm(span=8, adjust=False).mean()
-
-        # Conditions
-        df["golden_cross"] = (df["SMA50"] > df["SMA100"])
-        df["cond_trend"] = (df["SMA20"] > df["SMA50"]) & (df["EMA8"] > df["SMA20"])
-
-        if recent == 0:  # Only check last day
-            gc = bool(df["golden_cross"].iloc[-1])
-            trend = bool(df["cond_trend"].iloc[-1])
-
-            if gc and trend:
-                return {
-                    "Symbol": symbol,
-                    "Date": df.index[-1].date(),
-                    "Close": float(df["Close"].iloc[-1])
-                }
-        else:  # Check last N bars
-            recent_df = df.tail(recent)
-            cond = (recent_df["golden_cross"] & recent_df["cond_trend"])
-            cond = cond[cond]  # keep only True rows
-
-            if not cond.empty:
-                last_valid = cond.index[-1]
-                return {
-                    "Symbol": symbol,
-                    "Date": last_valid.date(),
-                    "Close": float(df.loc[last_valid, "Close"])
-                }
-
-    except Exception as e:
-        st.error(f"Error for {symbol}: {e}")
+def check_condition(latest):
+    """
+    Given latest row of data with the computed indicators,
+    check if:
+      - EMA8 and SMA5 are between EMA44 and SMA50
+      - Close > EMA8 (bullish)
+    Return strength % or None
+    """
+    lower = min(latest["EMA44"], latest["SMA50"])
+    upper = max(latest["EMA44"], latest["SMA50"])
+    cond_between = (lower < latest["EMA8"] < upper) and (lower < latest["SMA5"] < upper)
+    cond_bull = latest["Close"] > latest["EMA8"]
+    if cond_between and cond_bull:
+        strength_pct = ((latest["Close"] - latest["EMA8"]) / latest["EMA8"]) * 100
+        return round(strength_pct, 4)
     return None
 
-# ---- Run Screener ----
-if st.button("🔍 Run Screener"):
-    symbols = [s.strip().upper() for s in symbols_input.split(",")]
+def scan_nifty50():
+    # Step 1: get current constituents
+    tickers = fetch_nifty50_tickers()
+    print(f"Fetched {len(tickers)} tickers from Wikipedia: {tickers[:5]} ...")
+
     results = []
+    for tk in tickers:
+        try:
+            df = yf.download(tk, period="6mo", interval="1d", progress=False)
+            if df.shape[0] < 50:
+                continue  # not enough data yet
 
-    for sym in symbols:
-        row = fetch_and_screen(sym, lookback)
-        if row:
-            results.append(row)
+            # compute indicators
+            df["EMA8"] = ta.trend.ema_indicator(df["Close"], window=8)
+            df["EMA44"] = ta.trend.ema_indicator(df["Close"], window=44)
+            df["SMA5"] = df["Close"].rolling(window=5).mean()
+            df["SMA50"] = df["Close"].rolling(window=50).mean()
 
-    if results:
-        st.success(f"✅ Found {len(results)} stocks matching conditions")
-        df_results = pd.DataFrame(results)
-        st.dataframe(df_results)
+            latest = df.iloc[-1]
+            # Check for NaNs
+            needed = ["EMA8","EMA44","SMA5","SMA50","Close"]
+            if any(pd.isna(latest[col]) for col in needed):
+                continue
+
+            strength = check_condition(latest)
+            if strength is not None:
+                results.append({
+                    "Ticker": tk,
+                    "Close": round(latest["Close"], 2),
+                    "EMA8": round(latest["EMA8"], 2),
+                    "SMA5": round(latest["SMA5"], 2),
+                    "EMA44": round(latest["EMA44"], 2),
+                    "SMA50": round(latest["SMA50"], 2),
+                    "Strength_%": round(strength, 2),
+                })
+        except Exception as e:
+            print(f"Error with {tk}: {e}")
+
+    results_df = pd.DataFrame(results)
+    if results_df.empty:
+        print("No NIFTY50 stocks meet the condition today.")
     else:
-        st.warning("⚠️ No stocks matched the conditions.")
+        results_df = results_df.sort_values(by="Strength_%", ascending=False).reset_index(drop=True)
+        print("Stocks meeting your criteria (sorted by strength):")
+        print(results_df)
+
+    return results_df
+
+if __name__ == "__main__":
+    scan_nifty50()
