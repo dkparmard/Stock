@@ -6,7 +6,6 @@ st.set_page_config(page_title="📊 NIFTY50 Screener", layout="wide")
 st.title("📊 NIFTY50 Screener (No External TA Library)")
 st.caption("Condition: EMA8 & SMA5 between EMA44 & SMA50 and Close > EMA8")
 
-# --- Fetch NIFTY50 Tickers (Static List, avoids SSL errors) ---
 def fetch_nifty50_tickers():
     return [
         "ADANIENT.NS","ADANIPORTS.NS","APOLLOHOSP.NS","ASIANPAINT.NS","AXISBANK.NS",
@@ -20,7 +19,6 @@ def fetch_nifty50_tickers():
         "TECHM.NS","TITAN.NS","ULTRACEMCO.NS","UPL.NS","WIPRO.NS"
     ]
 
-# --- Screener Logic ---
 def scan_nifty50():
     tickers = fetch_nifty50_tickers()
     results = []
@@ -31,19 +29,29 @@ def scan_nifty50():
             if df.empty:
                 continue
 
-            # --- Calculate Indicators ---
             df["EMA8"] = df["Close"].ewm(span=8, adjust=False).mean()
             df["EMA44"] = df["Close"].ewm(span=44, adjust=False).mean()
             df["SMA5"] = df["Close"].rolling(window=5).mean()
             df["SMA50"] = df["Close"].rolling(window=50).mean()
 
-            last = df.iloc[-1]
-            ema8, ema44, sma5, sma50, close = last["EMA8"], last["EMA44"], last["SMA5"], last["SMA50"], last["Close"]
+            # Drop NaN rows so last row has all indicators
+            df = df.dropna()
+            if df.empty:
+                continue
 
-            # --- Condition: EMA8 & SMA5 between EMA44 & SMA50 & Close > EMA8 ---
+            last = df.iloc[-1]  # ✅ Guaranteed to be a single row
+            ema8, ema44, sma5, sma50, close = (
+                float(last["EMA8"]),
+                float(last["EMA44"]),
+                float(last["SMA5"]),
+                float(last["SMA50"]),
+                float(last["Close"]),
+            )
+
+            # ✅ Safe scalar comparisons
             if (
-                ema8 > min(ema44, sma50) and ema8 < max(ema44, sma50)
-                and sma5 > min(ema44, sma50) and sma5 < max(ema44, sma50)
+                min(ema44, sma50) < ema8 < max(ema44, sma50)
+                and min(ema44, sma50) < sma5 < max(ema44, sma50)
                 and close > ema8
             ):
                 results.append({
@@ -59,7 +67,6 @@ def scan_nifty50():
 
     return pd.DataFrame(results)
 
-# --- UI Button ---
 if st.button("🔎 Scan Now"):
     st.write("⏳ Scanning NIFTY50 stocks...")
     df = scan_nifty50()
