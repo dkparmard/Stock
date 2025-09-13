@@ -1,26 +1,22 @@
-import requests
 import pandas as pd
 import yfinance as yf
-from bs4 import BeautifulSoup
 import streamlit as st
 
-# ---------- Fetch NIFTY50 tickers ----------
-@st.cache_data(ttl=3600)
-def fetch_nifty50_tickers():
-    url = "https://en.wikipedia.org/wiki/NIFTY_50"
-    resp = requests.get(url)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
-    table = soup.find("table", {"class": "wikitable sortable"})
-    tickers = []
-    for row in table.find_all("tr")[1:]:
-        cols = row.find_all("td")
-        if len(cols) < 2:
-            continue
-        symbol = cols[1].text.strip()
-        if symbol:
-            tickers.append(f"{symbol}.NS")
-    return tickers
+# ---------- Predefined NIFTY50 tickers ----------
+@st.cache_data
+def get_nifty50_tickers():
+    return [
+        "ADANIENT.NS","ADANIPORTS.NS","APOLLOHOSP.NS","ASIANPAINT.NS","AXISBANK.NS",
+        "BAJAJ-AUTO.NS","BAJFINANCE.NS","BAJAJFINSV.NS","BPCL.NS","BHARTIARTL.NS",
+        "BRITANNIA.NS","CIPLA.NS","COALINDIA.NS","DIVISLAB.NS","DRREDDY.NS",
+        "EICHERMOT.NS","GRASIM.NS","HCLTECH.NS","HDFCBANK.NS","HDFCLIFE.NS",
+        "HEROMOTOCO.NS","HINDALCO.NS","HINDUNILVR.NS","ICICIBANK.NS","ITC.NS",
+        "INDUSINDBK.NS","INFY.NS","JSWSTEEL.NS","KOTAKBANK.NS","LTIM.NS",
+        "LT.NS","M&M.NS","MARUTI.NS","NTPC.NS","NESTLEIND.NS",
+        "ONGC.NS","POWERGRID.NS","RELIANCE.NS","SBILIFE.NS","SBIN.NS",
+        "SUNPHARMA.NS","TCS.NS","TATACONSUM.NS","TATAMOTORS.NS","TATASTEEL.NS",
+        "TECHM.NS","TITAN.NS","ULTRACEMCO.NS","WIPRO.NS","UPL.NS"
+    ]
 
 # ---------- Indicator & Condition ----------
 def check_condition(df):
@@ -35,7 +31,7 @@ def check_condition(df):
     return None
 
 def scan_nifty50():
-    tickers = fetch_nifty50_tickers()
+    tickers = get_nifty50_tickers()
     results = []
     progress_bar = st.progress(0)
     for i, tk in enumerate(tickers):
@@ -43,17 +39,13 @@ def scan_nifty50():
             df = yf.download(tk, period="6mo", interval="1d", progress=False)
             if df.shape[0] < 50:
                 continue
-
-            # Calculate EMAs and SMAs using pandas
             df["EMA8"] = df["Close"].ewm(span=8, adjust=False).mean()
             df["EMA44"] = df["Close"].ewm(span=44, adjust=False).mean()
             df["SMA5"] = df["Close"].rolling(window=5).mean()
             df["SMA50"] = df["Close"].rolling(window=50).mean()
-
             latest = df.iloc[-1]
             if any(pd.isna(latest[col]) for col in ["EMA8", "EMA44", "SMA5", "SMA50", "Close"]):
                 continue
-
             strength = check_condition(df)
             if strength is not None:
                 results.append({
@@ -71,11 +63,11 @@ def scan_nifty50():
     return pd.DataFrame(results)
 
 # ---------- Streamlit UI ----------
-st.title("📊 NIFTY50 Screener (No External TA Library)")
+st.title("📊 NIFTY50 Screener (No External Fetch)")
 st.markdown("**Condition:** EMA8 & SMA5 between EMA44 & SMA50 + Close > EMA8")
 
 if st.button("🔎 Scan Now"):
-    with st.spinner("Fetching & scanning NIFTY50 stocks..."):
+    with st.spinner("Scanning NIFTY50 stocks..."):
         df = scan_nifty50()
         if df.empty:
             st.warning("No stocks meet the condition today.")
